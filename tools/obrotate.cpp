@@ -3,14 +3,14 @@ obrotate = rotate a tortional bond matched by a SMART pattern
 Copyright (C) 2003 Fabien Fontaine
 Some portions Copyright (C) 2004-2005 Geoffrey R. Hutchison
 Some portions Copyright (C) 2008 Tim Vandermeersch
-
+ 
 This file is part of the Open Babel project.
 For more information, see <http://openbabel.org/>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation version 2 of the License.
-
+ 
 This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
@@ -34,6 +34,8 @@ GNU General Public License for more details.
 #define USING_OBDLL
 #endif
 
+#include <sstream>
+
 #include <openbabel/babelconfig.h>
 #include <openbabel/mol.h>
 #include <openbabel/parsmart.h>
@@ -44,47 +46,89 @@ GNU General Public License for more details.
 using namespace std;
 using namespace OpenBabel;
 
+static int sum=0;
+char *FileIn =NULL;
+float angle =   0;      // tortional angle value to set in degree
+int angleSum = 0;
+OBConversion conv; //NF...
+
+void turnMol(OBMol& mol,vector< vector <int> >& maplist,int k)
+{
+	if (k<0)
+		return;
+	if (k>=maplist.size())
+		return;
+
+	OBAtom *a1, *a2, *a3, *a4;
+
+	string fileName;
+	ostringstream oss(fileName);
+//	for (int outer = 0; outer < maplist.size(); outer++)
+//		for (int inner = 0; inner < angleSum; inner++) {
+	for (int i=0;i<angleSum;++i) {
+		fileName = "";
+//		a1 = mol.GetAtom( maplist[outer][smartor[0] - 1] );
+//		a2 = mol.GetAtom( maplist[outer][smartor[1] - 1] );
+//		a3 = mol.GetAtom( maplist[outer][smartor[2] - 1] );
+//		a4 = mol.GetAtom( maplist[outer][smartor[3] - 1] );
+		a1 = mol.GetAtom( maplist[k][0] );
+		a2 = mol.GetAtom( maplist[k][1] );
+		a3 = mol.GetAtom( maplist[k][2] );
+		a4 = mol.GetAtom( maplist[k][3] );
+		if ( !a2->IsConnected(a3) ) {
+			cerr << "obrotate: The atoms of the rotating bond must be bonded." << endl;
+			exit(-1);
+		}
+		
+		oss.str("");
+		oss << sum++ << "," << FileIn ;
+		ofstream ofs(oss.str().c_str());
+		
+		cout << angle*DEG_TO_RAD<<endl;
+		mol.SetTorsion(a1, a2, a3, a4, i * angle * DEG_TO_RAD);
+
+		cout << "Outputing file no." << sum << "/" << pow(maplist.size(),angleSum) << endl;
+
+		conv.Write(&mol,&ofs); //NF
+		turnMol(mol,maplist,k-1);
+	}
+}
+
+
 ///////////////////////////////////////////////////////////////////////////////
 //! \brief Set a tortional bond to a given angle
 int main(int argc,char **argv)
 {
-  OBAtom *a1, *a2, *a3, *a4;
   unsigned int smartor[4]= {0,0,0,0};// atoms of the tortional in the SMART
-  float angle =   0;      // tortional angle value to set in degree
-  char *FileIn =NULL, *Pattern=NULL;
+  const char *Pattern=NULL;
   unsigned int i, t, errflg = 0;
   int c;
   string err;
   //bool changeAll = false; // default to only change the last matching torsion
 
   // parse the command line -- optional -a flag to change all matching torsions
-  if (argc < 8 || argc > 9) {
+  if (argc < 3 || argc > 4) {
     errflg++;
   } else {
-    FileIn = argv[2];
-    Pattern = argv[1];
+    FileIn = argv[1];
+    Pattern = "CCCC";
     // Read the atom position
-    for(i=3, t=0; i<7; ++i, ++t) {
-      c = sscanf(argv[i], "%u", &smartor[t]);
-      if (c != 1) {
-        errflg++;  // error in arguments, quit and warn user
-        break;
-      }
-    }
-    c = sscanf(argv[7], "%f", &angle);
-    if (c != 1) {
-      errflg++; // error in arguments, quit and warn user
-    }
+    for(t=0; t<4; ++t)
+      smartor[t] = t + 1;
+    c = sscanf(argv[2], "%d", &angleSum);
+	angle = 360./angleSum;
   }
 
   if (errflg) {
-    cerr << "Usage: obrotate \"PATTERN\" <filename> <atom1> <atom2> <atom3> <atom4> <angle>" << endl;
+    cerr << "Usage: rkrotate <filename> <angle>" << endl;
     exit(-1);
   }
 
   // create pattern
   OBSmartsPattern sp;
   sp.Init(Pattern);
+  
+  //TODO: remove this if statement and next for statement, for we don't need to check these.
   if (sp.NumAtoms() < 4) {
     cerr << "obrotate: The number of atoms in the SMART pattern must be higher than 3." << endl;
     exit(-1);
@@ -99,7 +143,6 @@ int main(int argc,char **argv)
     }
   }
 
-  OBConversion conv; //NF...
   OBFormat* format = conv.FormatFromExt(FileIn);
   if(!(format && conv.SetInAndOutFormats(format, format))) { //in and out formats same
     cerr << "obrotate: cannot read and/or write this file format!" << endl;
@@ -116,11 +159,12 @@ int main(int argc,char **argv)
     exit (-1);
   }
 
+  OBMol molStored; 
   OBMol mol;
   vector< vector <int> > maplist;      // list of matched atoms
-  vector< vector <int> >::iterator m;  // and its iterators
+//  vector< vector <int> >::iterator m;  // and its iterators
   //   int tindex;
-
+  
   // Set the angles
   for (;;) {
     mol.Clear();
@@ -128,36 +172,23 @@ int main(int argc,char **argv)
     conv.Read(&mol,&ifs); //NF
     if (mol.Empty())
       break;
+	  
+	molStored = mol;
 
-    if (sp.Match(mol)) {
+    if (sp.Match(mol)) {          
       // if match perform rotation
       maplist = sp.GetUMapList(); // get unique matches
-
+      
       if (maplist.size() > 1)
         cerr << "obrotate: Found " << maplist.size() << " matches. Only last one will be rotated." << endl;
 
       // look at all the mapping atom but save only the last one.
-      for (m = maplist.begin(); m != maplist.end(); ++m) {
-        a1 = mol.GetAtom( (*m)[ smartor[0] - 1] );
-        a2 = mol.GetAtom( (*m)[ smartor[1] - 1] );
-        a3 = mol.GetAtom( (*m)[ smartor[2] - 1] );
-        a4 = mol.GetAtom( (*m)[ smartor[3] - 1] );
-        //if (changeAll)
-        //  mol.SetTorsion(a1, a2, a3, a4, angle * DEG_TO_RAD);
-      }
-
-      if ( !a2->IsConnected(a3) ) {
-        cerr << "obrotate: The atoms of the rotating bond must be bonded." << endl;
-        exit(-1);
-      }
-
-      mol.SetTorsion(a1, a2, a3, a4, angle * DEG_TO_RAD);
+	turnMol(mol,maplist,maplist.size()-1);
     } else {
       cerr << "obrotate: Found 0 matches for the SMARTS pattern." << endl;
       exit(-1);
     }
     //NF      cout << mol;
-    conv.Write(&mol,&cout); //NF
   }
 
   return(0);
@@ -174,20 +205,20 @@ int main(int argc,char **argv)
 *
 * \par DESCRIPTION
 *
-* The obrotate program rotates the torsional (dihedral) angle of a specified
+* The obrotate program rotates the torsional (dihedral) angle of a specified 
 * bond in molecules to that defined by the user. In other words, it does the
-* same as a user setting an angle in a molecular modelling package, but much
+* same as a user setting an angle in a molecular modelling package, but much 
 * faster and in batch mode.
 * \n\n
 * The four atom IDs required are indexes into the SMARTS pattern, which starts
 * at atom 1. The angle supplied is in degrees. The two atoms used to set
-* the dihedral angle \<atom1\> and \<atom4\> do not need to be connected
+* the dihedral angle \<atom1\> and \<atom4\> do not need to be connected 
 * to the atoms of the bond \<atom2\> and \<atom3\> in any way.
 *\n\n
 * The order of the atoms matters -- the portion of the molecule attached to
 * \<atom1\> and \<atom2\> remain fixed, but the portion bonded to \<atom3\> and
 & \<atom4\> moves.
-*
+* 
 * \par EXAMPLES
 *  - Let's say that you want to define the conformation of a large number of
 *  molecules with a pyridyl scaffold and substituted with an aliphatic chain
@@ -196,7 +227,7 @@ int main(int argc,char **argv)
 *    To set the value of the first dihedral angle to 90 degrees:\n
 *   obrotate "c1ccncc1CCC" pyridines.sdf 5 6 7 8 90
 * \n
-* Here 6 and 7 define the bond to rotate in the SMARTS patter, i.e., c1-C and
+* Here 6 and 7 define the bond to rotate in the SMARTS patter, i.e., c1-C and 
 * atoms 5 and 8 define the particular dihedral angle to rotate.
 *  - Since the atoms to define the dihedral do not need to be directly
 *  connected, the nitrogen in the pyridine can be used:\n
