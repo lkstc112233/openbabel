@@ -51,12 +51,13 @@ public:
 	}
 	T& getVectorValue(int *indexes)
 	{
+		int index=*indexes<0?(m_size+*indexes)%m_size:*indexes%m_size;
 		if (m_degrees>1)
-			return value.lowerVector[*indexes<0?(m_size-*indexes)%m_size:*indexes%m_size]->getVectorValue(indexes+1);
+			return value.lowerVector[index]->getVectorValue(indexes+1);
 		else
-			return value.basicVector[*indexes<0?(m_size-*indexes)%m_size:*indexes%m_size];
+			return value.basicVector[index];
 	}
-	enum Status{Unchecked,NotMin,Min};
+	enum Status{Unchecked,NotInterested,Interested};
 	Status checkValueAtMax(MultiVector<Status>& vec, int* indexes)
 	{
 		class IntValHolder
@@ -69,28 +70,34 @@ public:
 			int val;
 		};
 		T me=getVectorValue(indexes);
-		if (vec.getVectorValue(indexes)!=Unchecked)
-			return vec.getVectorValue(indexes); 
+		auto status=vec.getVectorValue(indexes);
+		if (Unchecked!=status)
+			return status; 
 		for (int i=0;i<m_degrees;++i)
 		{
+			bool kill=false;
 			{
 				IntValHolder holder(indexes[i],indexes[i]-1);
 				if (getVectorValue(indexes)>me)
 				{
-					checkValueAtMax(vec,indexes);
-					return vec.getVectorValue(indexes)=NotMin;
+					kill=true;
+					checkValueAtMin(vec,indexes);
 				}
 			}
+			if (kill)
+				return vec.getVectorValue(indexes)=NotInterested;
 			{
 				IntValHolder holder(indexes[i],indexes[i]+1);
 				if (getVectorValue(indexes)>me)
 				{
-					checkValueAtMax(vec,indexes);
-					return vec.getVectorValue(indexes)=NotMin;
+					kill=true;
+					checkValueAtMin(vec,indexes);
 				}
 			}
+			if (kill)
+				return vec.getVectorValue(indexes)=NotInterested;
 		}
-		return vec.getVectorValue(indexes)=Min;
+		return vec.getVectorValue(indexes)=Interested;
 	}
 	Status checkValueAtMin(MultiVector<Status>& vec, int* indexes)
 	{
@@ -104,28 +111,34 @@ public:
 			int val;
 		};
 		T me=getVectorValue(indexes);
-		if (vec.getVectorValue(indexes)!=Unchecked)
-			return vec.getVectorValue(indexes); 
+		auto status=vec.getVectorValue(indexes);
+		if (Unchecked!=status)
+			return status; 
 		for (int i=0;i<m_degrees;++i)
 		{
+			bool kill=false;
 			{
 				IntValHolder holder(indexes[i],indexes[i]-1);
 				if (getVectorValue(indexes)<me)
 				{
+					kill=true;
 					checkValueAtMin(vec,indexes);
-					return vec.getVectorValue(indexes)=NotMin;
 				}
 			}
+			if (kill)
+				return vec.getVectorValue(indexes)=NotInterested;
 			{
 				IntValHolder holder(indexes[i],indexes[i]+1);
 				if (getVectorValue(indexes)<me)
 				{
+					kill=true;
 					checkValueAtMin(vec,indexes);
-					return vec.getVectorValue(indexes)=NotMin;
 				}
 			}
+			if (kill)
+				return vec.getVectorValue(indexes)=NotInterested;
 		}
-		return vec.getVectorValue(indexes)=Min;
+		return vec.getVectorValue(indexes)=Interested;
 	}
 
 	int getMaxValues(std::vector<int*> &vectorIn)
@@ -137,12 +150,11 @@ public:
 		for (int i=0;i<m_degrees;++i)
 			indexes[i]=0;
 		do
-			if (checkValueAtMax(o1boolVector,indexes))
-				vectorIn.push_back(getIndexCopy(indexes));
+		if (checkValueAtMax(o1boolVector,indexes)==Interested)
+			vectorIn.push_back(getIndexCopy(indexes));
 		while(incressIndex(indexes));
 		return vectorIn.size()-sumO;
 	}
-
 	int getMinValues(std::vector<int*> &vectorIn)
 	{
 		int sumO=vectorIn.size();
@@ -152,11 +164,12 @@ public:
 		for (int i=0;i<m_degrees;++i)
 			indexes[i]=0;
 		do
-			if (checkValueAtMin(o1boolVector,indexes))
-				vectorIn.push_back(getIndexCopy(indexes));
+		if (checkValueAtMin(o1boolVector,indexes)==Interested)
+			vectorIn.push_back(getIndexCopy(indexes));
 		while(incressIndex(indexes));
 		return vectorIn.size()-sumO;
 	}
+
 	int getMaxValuesOld(std::vector<int*> &vectorIn)
 	{
 		int sumO=vectorIn.size();
@@ -180,31 +193,31 @@ public:
 				o2recordVector[operatingDegree]->getVectorValue(indexes)=get2derivative(indexes,operatingDegree);
 			}
 			while(incressIndex(indexes));
-		for (int i=0;i<m_degrees;++i)
-			indexes[i]=0;
-		for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
-			do
-			{
-				bool tmp=o1boolVector[operatingDegree]->getVectorValue(indexes)=o1recordVector[operatingDegree]->getDiffWithNebr(indexes,operatingDegree);
-				if (tmp)
-					if (o2recordVector[operatingDegree]->getVectorValue(indexes)>0)
-						o1boolVector[operatingDegree]->getVectorValue(indexes)=false;
-			}
-			while(incressIndex(indexes));
-		
-		for (int i=0;i<m_degrees;++i)
-			indexes[i]=0;
-		do
-		{
-			bool buffer=true;
+			for (int i=0;i<m_degrees;++i)
+				indexes[i]=0;
 			for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
-				if (!o1boolVector[operatingDegree]->getVectorValue(indexes))
-					buffer=false;
-			if (buffer)
-				vectorIn.push_back(getIndexCopy(indexes));
-		}
-		while(incressIndex(indexes));
-		return vectorIn.size()-sumO;
+				do
+				{
+					bool tmp=o1boolVector[operatingDegree]->getVectorValue(indexes)=o1recordVector[operatingDegree]->getDiffWithNebr(indexes,operatingDegree);
+					if (tmp)
+						if (o2recordVector[operatingDegree]->getVectorValue(indexes)>0)
+							o1boolVector[operatingDegree]->getVectorValue(indexes)=false;
+				}
+				while(incressIndex(indexes));
+
+				for (int i=0;i<m_degrees;++i)
+					indexes[i]=0;
+				do
+				{
+					bool buffer=true;
+					for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
+						if (!o1boolVector[operatingDegree]->getVectorValue(indexes))
+							buffer=false;
+					if (buffer)
+						vectorIn.push_back(getIndexCopy(indexes));
+				}
+				while(incressIndex(indexes));
+				return vectorIn.size()-sumO;
 	}
 
 	int getMinValuesOld(std::vector<int*> &vectorIn)
@@ -230,31 +243,31 @@ public:
 				o2recordVector[operatingDegree]->getVectorValue(indexes)=get2derivative(indexes,operatingDegree);
 			}
 			while(incressIndex(indexes));
-		for (int i=0;i<m_degrees;++i)
-			indexes[i]=0;
-		for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
-			do
-			{
-				bool tmp=o1boolVector[operatingDegree]->getVectorValue(indexes)=o1recordVector[operatingDegree]->getDiffWithNebr(indexes,operatingDegree);
-				if (tmp)
-					if (o2recordVector[operatingDegree]->getVectorValue(indexes)<0)
-						o1boolVector[operatingDegree]->getVectorValue(indexes)=false;
-			}
-			while(incressIndex(indexes));
-		
-		for (int i=0;i<m_degrees;++i)
-			indexes[i]=0;
-		do
-		{
-			bool buffer=true;
+			for (int i=0;i<m_degrees;++i)
+				indexes[i]=0;
 			for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
-				if (!o1boolVector[operatingDegree]->getVectorValue(indexes))
-					buffer=false;
-			if (buffer)
-				vectorIn.push_back(getIndexCopy(indexes));
-		}
-		while(incressIndex(indexes));
-		return vectorIn.size()-sumO;
+				do
+				{
+					bool tmp=o1boolVector[operatingDegree]->getVectorValue(indexes)=o1recordVector[operatingDegree]->getDiffWithNebr(indexes,operatingDegree);
+					if (tmp)
+						if (o2recordVector[operatingDegree]->getVectorValue(indexes)<0)
+							o1boolVector[operatingDegree]->getVectorValue(indexes)=false;
+				}
+				while(incressIndex(indexes));
+
+				for (int i=0;i<m_degrees;++i)
+					indexes[i]=0;
+				do
+				{
+					bool buffer=true;
+					for (int operatingDegree=0;operatingDegree<m_degrees;++operatingDegree)
+						if (!o1boolVector[operatingDegree]->getVectorValue(indexes))
+							buffer=false;
+					if (buffer)
+						vectorIn.push_back(getIndexCopy(indexes));
+				}
+				while(incressIndex(indexes));
+				return vectorIn.size()-sumO;
 	}
 	bool getDiffWithNebr(int* index,int degreeOperating)
 	{
