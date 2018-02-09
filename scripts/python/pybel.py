@@ -23,6 +23,7 @@ import os.path
 import tempfile
 import json
 import uuid
+import xml.etree.ElementTree as ET
 
 if sys.platform[:4] == "java":
     import org.openbabel as ob
@@ -80,7 +81,7 @@ def _getpluginnames(ptype):
     ob.OBPlugin.ListAsVector(ptype, None, plugins)
     if sys.platform[:4] == "java":
         plugins = [plugins.get(i) for i in range(plugins.size())]
-    return [x.split()[0] for x in plugins]
+    return [x.split()[0] for x in plugins if x.strip()]
 
 _obconv = ob.OBConversion()
 _builder = ob.OBBuilder()
@@ -249,13 +250,18 @@ class Outputfile(object):
         if not formatok:
             raise ValueError("%s is not a recognised Open Babel format" %
                              format)
-
+        if filename:
+            if isinstance(filename, bytes):
+                gzextension = b'.gz'
+            else:
+                gzextension = '.gz'
+            if os.path.splitext(filename)[1] == gzextension:
+                self.obconversion.AddOption('z', self.obConversion.GENOPTIONS)
         for k, v in opt.items():
             if v is None:
                 self.obConversion.AddOption(k, self.obConversion.OUTOPTIONS)
             else:
-                self.obConversion.AddOption(
-                    k, self.obConversion.OUTOPTIONS, str(v))
+                self.obConversion.AddOption(k, self.obConversion.OUTOPTIONS, str(v))
         self.total = 0  # The total number of molecules written to the file
 
     def write(self, molecule):
@@ -291,7 +297,7 @@ class Molecule(object):
     (refer to the Open Babel library documentation for more info).
 
     Methods:
-       addh(), calcfp(), calcdesc(), draw(), localopt(), make3D(),
+       addh(), calcfp(), calcdesc(), draw(), localopt(), make2D(), make3D()
        calccharges(), removeh(), write()
 
     The underlying Open Babel molecule can be accessed using the attribute:
@@ -382,6 +388,10 @@ class Molecule(object):
             raise AttributeError("Molecule has no attribute 'unitcell'")
 
     @property
+    def clone(self):
+        return Molecule(ob.OBMol(self.OBMol))
+
+    @property
     def _exchange(self):
         if self.OBMol.HasNonZeroCoords():
             return (1, self.write("mol"))
@@ -404,7 +414,15 @@ class Molecule(object):
         if ipython_3d:
             return None
 
-        return self.write("svg")
+        # Open babel returns a nested svg, which IPython unpacks and treats as
+        # two SVGs, messing with the display location. This parses out the
+        # inner svg before handing over to IPython.
+        namespace = "http://www.w3.org/2000/svg"
+        ET.register_namespace("", namespace)
+        obsvg = self.clone.write("svg")
+        tree = ET.fromstring(obsvg)
+        svg = tree.find("{{{ns}}}g/{{{ns}}}svg".format(ns=namespace))
+        return ET.tostring(svg).decode("utf-8")
 
     def _repr_html_(self):
         """For IPython notebook, renders 3D pybel.Molecule webGL objects."""
@@ -413,75 +431,12 @@ class Molecule(object):
         if not ipython_3d:
             return None
 
-        # If the javascript files have not yet been loaded, do so
-        # IPython >=2.0 does this by copying into ~/.ipython/nbextensions
-        filename = "imolecule.min.js"
-        local_path = os.path.join("nbextensions", filename)
-        remote_path = ("https://rawgit.com/openbabel/contributed/master/web/"
-                       "imolecule/build/imolecule.min.js")
-
-        # Try using IPython >=2.0 to install js locally from website
         try:
-            from IPython.html.nbextensions import (install_nbextension,
-                                                   check_nbextension)
-            if not check_nbextension(local_path):
-                install_nbextension(remote_path, verbose=0)
-        except:
-            pass
-
-        # Some exposed parameters. Leaving this unfunctionalized for now.
-        size = (400, 300)
-        drawing_type = "ball and stick"
-        camera_type = "perspective"
-
-        # Infer structure in cases where the input format has no specification
-        if not self.OBMol.HasNonZeroCoords():
-            self.make3D()
-        self.OBMol.Center()
-
-        # Convert the relevant parts of `self` into JSON for rendering
-        table = ob.OBElementTable()
-        atoms = [{"element": table.GetSymbol(atom.atomicnum),
-                  "location": atom.coords}
-                 for atom in self.atoms]
-        bonds = [{"atoms": [bond.GetBeginAtom().GetIndex(),
-                            bond.GetEndAtom().GetIndex()],
-                  "order": bond.GetBondOrder()}
-                 for bond in ob.OBMolBondIter(self.OBMol)]
-        mol = {"atoms": atoms, "bonds": bonds}
-        if hasattr(self, "unitcell"):
-            uc = self.unitcell
-            mol["unitcell"] = [[v.GetX(), v.GetY(), v.GetZ()]
-                               for v in uc.GetCellVectors()]
-            # Support for previous naming scheme
-            mol["periodic_connections"] = mol["unitcell"]
-        json_mol = json.dumps(mol, separators=(",", ":"))
-
-        # Try using local copy. If that fails, use remote copy.
-        div_id = uuid.uuid4()
-        return """<div id="molecule_%s"></div>
-               <script type="text/javascript">
-               requirejs.config({baseUrl: "/",
-                                 paths: {imolecule: ['%s', '%s']}});
-               require(['imolecule'], function () {
-                   var $d = $('#molecule_%s');
-                   $d.width(%d); $d.height(%d);
-                   $d.imolecule = jQuery.extend({}, imolecule);
-                   $d.imolecule.create($d, {drawingType: '%s',
-                                            cameraType: '%s'});
-                   $d.imolecule.draw(%s);
-
-                   $d.resizable({
-                       aspectRatio: %d / %d,
-                       resize: function (evt, ui) {
-                           $d.imolecule.renderer.setSize(ui.size.width,
-                                                         ui.size.height);
-                       }
-                   });
-               });
-               </script>""" % (div_id, local_path[:-3], remote_path[:-3],
-                               div_id, size[0], size[1], drawing_type,
-                               camera_type, json_mol, size[0], size[1])
+            import imolecule
+        except ImportError:
+            raise ImportError("Cannot import 3D rendering. Please install "
+                              "with `pip install imolecule`.")
+        return imolecule.draw(self.clone, format="pybel", display_html=False)
 
     def calcdesc(self, descnames=[]):
         """Calculate descriptor values.
@@ -575,6 +530,13 @@ class Molecule(object):
         if not formatok:
             raise ValueError("%s is not a recognised Open Babel format" %
                              format)
+        if filename:
+            if isinstance(filename, bytes):
+                gzextension = b'.gz'
+            else:
+                gzextension = '.gz'
+            if os.path.splitext(filename)[1] == gzextension:
+                obconversion.AddOption('z', self.obConversion.GENOPTIONS)
         for k, v in opt.items():
             if v is None:
                 obconversion.AddOption(k, obconversion.OUTOPTIONS)
@@ -611,6 +573,10 @@ class Molecule(object):
             return
         ff.SteepestDescent(steps)
         ff.GetCoordinates(self.OBMol)
+
+    def make2D(self):
+        """Generate 2D coordinates."""
+        _operations['gen2D'].Do(self.OBMol)
 
     def make3D(self, forcefield="mmff94", steps=50):
         """Generate 3D coordinates.

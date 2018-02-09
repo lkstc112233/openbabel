@@ -15,6 +15,7 @@ GNU General Public License for more details.
 
 #include <openbabel/babelconfig.h>
 #include <openbabel/obmolecformat.h>
+#include <openbabel/obfunctions.h>
 
 #include <vector>
 #include <map>
@@ -33,6 +34,8 @@ namespace OpenBabel
     {
       OBConversion::RegisterFormat("pdb",this, "chemical/x-pdb");
       OBConversion::RegisterFormat("ent",this, "chemical/x-pdb");
+
+      OBConversion::RegisterOptionParam("o", this);
     }
 
     virtual const char* Description() //required
@@ -42,7 +45,10 @@ namespace OpenBabel
         "Read Options e.g. -as\n"
         "  s  Output single bonds only\n"
         "  b  Disable bonding entirely\n"
-        "  c  Ignore CONECT records\n\n";
+        "  c  Ignore CONECT records\n\n"
+
+        "Write Options, e.g. -xo\n"
+        "  o  Write origin in space group label (CRYST1 section)\n\n";
     };
 
     virtual const char* SpecificationURL()
@@ -66,6 +72,8 @@ namespace OpenBabel
 
   ////////////////////////////////////////////////////
   /// Utility functions
+  static void fixRhombohedralSpaceGroupWriter(string &strHM);
+  static void fixRhombohedralSpaceGroupReader(string &strHM);
   static bool parseAtomRecord(char *buffer, OBMol & mol, int chainNum);
   static bool parseConectRecord(char *buffer, OBMol & mol);
   static bool readIntegerFromRecord(char *buffer, unsigned int columnAsSpecifiedInPDB, long int *target);
@@ -88,6 +96,14 @@ namespace OpenBabel
     return ifs.good() ? 1 : -1;
   }
   /////////////////////////////////////////////////////////////////
+   template <typename T> string to_string(T pNumber)
+  {
+    ostringstream oOStrStream;
+    oOStrStream << pNumber;
+    return oOStrStream.str();
+  }
+
+  /////////////////////////////////////////////////////////////////
   bool PDBFormat::ReadMolecule(OBBase* pOb, OBConversion* pConv)
   {
 
@@ -102,7 +118,6 @@ namespace OpenBabel
 
     int chainNum = 1;
     char buffer[BUFF_SIZE];
-    OBBitVec bs;
     string line, key, value;
     OBPairData *dp;
 
@@ -132,8 +147,6 @@ namespace OpenBabel
                          << "  Problems reading a ATOM/HETATM record.\n";
                 obErrorLog.ThrowError(__FUNCTION__, errorMsg.str() , obError);
               }
-            if (EQn(buffer,"ATOM",4))
-              bs.SetBitOn(mol.NumAtoms());
             continue;
           }
 
@@ -155,6 +168,7 @@ namespace OpenBabel
           buffer[66] = '\0';
           group += &(buffer[55]);
           Trim (group);
+          fixRhombohedralSpaceGroupReader(group);
 
           OBUnitCell *pCell=new OBUnitCell;
           pCell->SetOrigin(fileformatInput);
@@ -201,7 +215,7 @@ namespace OpenBabel
       return(false);
     }
 
-    resdat.AssignBonds(mol,bs);
+    resdat.AssignBonds(mol);
     /*assign hetatm bonds based on distance*/
 
     mol.EndModify();
@@ -215,6 +229,10 @@ namespace OpenBabel
 
     if (!pConv->IsOption("s",OBConversion::INOPTIONS) && !pConv->IsOption("b",OBConversion::INOPTIONS))
       mol.PerceiveBondOrders();
+
+    // Guess how many hydrogens are present on each atom based on typical valencies
+    FOR_ATOMS_OF_MOL(matom, mol)
+      OBAtomAssignTypicalImplicitHydrogens(&*matom);
 
     // clean out remaining blank lines
     while(ifs.peek() != EOF && ifs.good() &&
@@ -478,8 +496,11 @@ namespace OpenBabel
     char the_chain = ' ';
     const char *element_name;
     int res_num;
+    char the_insertioncode = ' ';
     bool het=true;
     int model_num = 0;
+    const int MAX_HM_NAME_LEN = 11;
+
     if (!pConv->IsLast() || pConv->GetOutputIndex() > 1)
       { // More than one molecule record
         model_num = pConv->GetOutputIndex(); // MODEL 1-based index
@@ -555,9 +576,27 @@ namespace OpenBabel
         OBUnitCell *pUC = (OBUnitCell*)pmol->GetData(OBGenericDataType::UnitCell);
         if(pUC->GetSpaceGroup()){
           string tmpHM=pUC->GetSpaceGroup()->GetHMName();
+          fixRhombohedralSpaceGroupWriter(tmpHM);
+
           // Do we have an extended HM symbol, with origin choice as ":1" or ":2" ? If so, remove it.
           size_t n=tmpHM.find(":");
-          if(n!=string::npos) tmpHM=tmpHM.substr(0,n);
+          if(n!=string::npos) tmpHM=tmpHM.substr(0, n);
+
+          if (pConv->IsOption("o", OBConversion::OUTOPTIONS))
+            {
+              unsigned int origin = pUC->GetSpaceGroup()->GetOriginAlternative();
+              if (origin == pUC->GetSpaceGroup()->HEXAGONAL_ORIGIN)
+                tmpHM[0] = 'H';
+              else if (origin > 0)
+                tmpHM += ":" + to_string(origin);
+
+              if (tmpHM.length() > MAX_HM_NAME_LEN)
+              {
+                tmpHM.erase(std::remove(tmpHM.begin(), tmpHM.end(), ' '),
+                            tmpHM.end());
+              }
+            }
+
           snprintf(buffer, BUFF_SIZE,
                    "CRYST1%9.3f%9.3f%9.3f%7.2f%7.2f%7.2f %-11s 1",
                    pUC->GetA(), pUC->GetB(), pUC->GetC(),
@@ -605,7 +644,7 @@ namespace OpenBabel
     for (i = 1; i <= mol.NumAtoms(); i++)
       {
         atom = mol.GetAtom(i);
-        strncpy(type_name, etab.GetSymbol(atom->GetAtomicNum()), sizeof(type_name));
+        strncpy(type_name, OBElements::GetSymbol(atom->GetAtomicNum()), sizeof(type_name));
         type_name[sizeof(type_name) - 1] = '\0';
 
         //two char. elements are on position 13 and 14 one char. start at 14
@@ -627,7 +666,7 @@ namespace OpenBabel
             the_chain = res->GetChain();
 
             //two char. elements are on position 13 and 14 one char. start at 14
-            if (strlen(etab.GetSymbol(atom->GetAtomicNum())) == 1)
+            if (strlen(OBElements::GetSymbol(atom->GetAtomicNum())) == 1)
               {
                 if (strlen(type_name) < 4)
                   {
@@ -650,6 +689,8 @@ namespace OpenBabel
                   }
               }
             res_num = res->GetNum();
+            the_insertioncode = res->GetInsertionCode();
+            if (0 == the_insertioncode) the_insertioncode=' ';
           }
         else
           {
@@ -659,9 +700,10 @@ namespace OpenBabel
             strncpy(type_name,padded_name,4);
             type_name[4] = '\0';
             res_num = 1;
+            the_insertioncode=' ';
           }
 
-        element_name = etab.GetSymbol(atom->GetAtomicNum());
+        element_name = OBElements::GetSymbol(atom->GetAtomicNum());
 
         int charge = atom->GetFormalCharge();
         char scharge[3] = { ' ', ' ', '\0' };
@@ -672,13 +714,14 @@ namespace OpenBabel
             scharge[1] = scharge[0];
             scharge[0] = tmp;
           }
-        snprintf(buffer, BUFF_SIZE, "%s%5d %-4s %-3s %c%4d    %8.3f%8.3f%8.3f  1.00  0.00          %2s%2s\n",
+        snprintf(buffer, BUFF_SIZE, "%s%5d %-4s %-3s %c%4d%c   %8.3f%8.3f%8.3f  1.00  0.00          %2s%2s\n",
                  het?"HETATM":"ATOM  ",
                  i,
                  type_name,
                  the_res,
                  the_chain,
                  res_num,
+                 the_insertioncode,
                  atom->GetX(),
                  atom->GetY(),
                  atom->GetZ(),
@@ -725,15 +768,85 @@ namespace OpenBabel
     snprintf(buffer, BUFF_SIZE, "%4d    0 %4d    0\n",mol.NumAtoms(),mol.NumAtoms());
     ofs << buffer;
 
-    ofs << "END\n";
     if (model_num) {
       ofs << "ENDMDL" << endl;
+	  if (pConv->IsLast()) {
+	    ofs << "END\n";
+	  }
     }
+	else {
+	  ofs << "END\n";
+	}
 
     return(true);
   }
 
   ////////////////////////////////////////////////////////////////
+  static void fixRhombohedralSpaceGroupWriter(string &strHM)
+  {
+    /* This is due to the requirment of PDB to name rhombohedral groups
+       with H (http://deposit.rcsb.org/adit/docs/pdb_atom_format.html) */
+    const int SIZE = 7;
+    const char* groups[SIZE]  =   {"R 3:H",
+                                   "R -3:H",
+                                   "R 3 2:H",
+                                   "R 3 m:H",
+                                   "R 3 c:H",
+                                   "R -3 m:H",
+                                   "R -3 c:H"};
+
+    std::vector<string> vec(groups, groups + SIZE);
+    if(std::find(vec.begin(), vec.end(), strHM) != vec.end())
+    {
+      strHM[0] = 'H';
+    }
+  }
+
+  static void fixRhombohedralSpaceGroupReader(string &strHM)
+  {
+    /* This is due to the requirment of PDB to name rhombohedral groups
+       with H (http://deposit.rcsb.org/adit/docs/pdb_atom_format.html) */
+    const int SIZE = 7;
+    const char* groups[SIZE]  =   {"H 3",
+                                   "H -3",
+                                   "H 3 2",
+                                   "H 3 m",
+                                   "H 3 c",
+                                   "H -3 m",
+                                   "H -3 c"};
+
+    std::vector<string> vec(groups, groups + SIZE);
+
+    if(std::find(vec.begin(), vec.end(), strHM) != vec.end())
+    {
+      strHM[0] = 'R';
+      strHM += ":H";
+    }
+  }
+
+  /*
+
+     From http://deposit.rcsb.org/adit/docs/pdb_atom_format.html
+
+	COLUMNS        DATA TYPE       CONTENTS
+	--------------------------------------------------------------------------------
+	 1 -  6        Record name     "ATOM  "
+	 7 - 11        Integer         Atom serial number.
+	13 - 16        Atom            Atom name.
+	17             Character       Alternate location indicator.
+	18 - 20        Residue name    Residue name.
+	22             Character       Chain identifier.
+	23 - 26        Integer         Residue sequence number.
+	27             AChar           Code for insertion of residues.
+	31 - 38        Real(8.3)       Orthogonal coordinates for X in Angstroms.
+	39 - 46        Real(8.3)       Orthogonal coordinates for Y in Angstroms.
+	47 - 54        Real(8.3)       Orthogonal coordinates for Z in Angstroms.
+	55 - 60        Real(6.2)       Occupancy.
+	61 - 66        Real(6.2)       Temperature factor (Default = 0.0).
+	73 - 76        LString(4)      Segment identifier, left-justified.
+	77 - 78        LString(2)      Element symbol, right-justified.
+	79 - 80        LString(2)      Charge on the atom.
+  */
   static bool parseAtomRecord(char *buffer, OBMol &mol,int /*chainNum*/)
   /* ATOMFORMAT "(i5,1x,a4,a1,a3,1x,a1,i4,a1,3x,3f8.3,2f6.2,a2,a2)" */
   {
@@ -753,6 +866,10 @@ namespace OpenBabel
     /* chain */
     char chain = sbuf.substr(15,1)[0];
 
+    /* insertion code */
+    char insertioncode = sbuf.substr(27-6-1,1)[0];
+    if (' '==insertioncode) insertioncode=0;
+
     /* element */
     string element = "  ";
     if (sbuf.size() > 71)
@@ -768,6 +885,7 @@ namespace OpenBabel
             else if (isalpha(element[0]))
               {
                 elementFound = true;
+                element[1] = tolower(element[1]);
               }
           }
       }
@@ -848,8 +966,13 @@ namespace OpenBabel
         // fix: #2002557
         if (atmid[0] == 'H' &&
             (atmid[1] == 'D' || atmid[1] == 'E' ||
-             atmid[1] == 'G' || atmid[1] == 'H')) // HD, HE, HG, HH, ..
+             atmid[1] == 'G' || atmid[1] == 'H' ||
+             atmid[1] == 'N')) // HD, HE, HG, HH, HN...
           type = "H";
+
+        if (type.size() == 2)
+          type[1] = tolower(type[1]);
+
       } else { //must be hetatm record
         if (isalpha(element[1]) && (isalpha(element[0]) || (element[0] == ' '))) {
           if (isalpha(element[0]))
@@ -861,7 +984,7 @@ namespace OpenBabel
             type[1] = tolower(type[1]);
         } else { // no element column to use
           if (isalpha(atmid[0])) {
-            if (atmid.size() > 2 && (atmid[2] == '\0' || atmid[2] == ' '))
+            if (atmid.size() > 2)
               type = atmid.substr(0,2);
             else if (atmid[0] == 'A') // alpha prefix
               type = atmid.substr(1, atmid.size() - 1);
@@ -911,14 +1034,19 @@ namespace OpenBabel
     string zstr = sbuf.substr(40,8);
     vector3 v(atof(xstr.c_str()),atof(ystr.c_str()),atof(zstr.c_str()));
     atom.SetVector(v);
-    atom.ForceImplH();
 
     // useful for debugging unknown atom types (e.g., PR#1577238)
-    //    cout << mol.NumAtoms() + 1  << " : '" << element << "'" << " " << etab.GetAtomicNum(element.c_str()) << endl;
+    //    cout << mol.NumAtoms() + 1  << " : '" << element << "'" << " " << OBElements::GetAtomicNum(element.c_str()) << endl;
     if (elementFound)
-      atom.SetAtomicNum(etab.GetAtomicNum(element.c_str()));
-    else // use our old-style guess from athe atom type
-      atom.SetAtomicNum(etab.GetAtomicNum(type.c_str()));
+      atom.SetAtomicNum(OBElements::GetAtomicNum(element.c_str()));
+    else { // use our old-style guess from athe atom type
+      unsigned int atomic_num = OBElements::GetAtomicNum(type.c_str());
+      if (atomic_num ==  0) { //try one character if two character element not found
+        type = type.substr(0,1);
+        atomic_num = OBElements::GetAtomicNum(type.c_str());
+      }
+      atom.SetAtomicNum(atomic_num);
+    }
 
     if ( (! scharge.empty()) && "  " != scharge )
       {
@@ -949,20 +1077,25 @@ namespace OpenBabel
     if (res == NULL
         || res->GetName() != resname
         || res->GetNumString() != resnum
-        || res->GetChain() != chain)
+        || res->GetChain() != chain
+        || res->GetInsertionCode() != insertioncode)
       {
         vector<OBResidue*>::iterator ri;
         for (res = mol.BeginResidue(ri) ; res ; res = mol.NextResidue(ri))
           if (res->GetName() == resname
               && res->GetNumString() == resnum
-              && static_cast<int>(res->GetChain()) == chain)
+              && static_cast<int>(res->GetChain()) == chain
+              && static_cast<int>(res->GetInsertionCode()) == insertioncode) {
+            if (insertioncode) fprintf(stderr,"I: identified residue wrt insertion code: '%c'\n",insertioncode);
             break;
+          }
 
         if (res == NULL) {
           res = mol.NewResidue();
           res->SetChain(chain);
           res->SetName(resname);
           res->SetNum(resnum);
+          res->SetInsertionCode(insertioncode);
         }
       }
 

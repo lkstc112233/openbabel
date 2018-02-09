@@ -31,18 +31,18 @@ class LpmdFormat : public OBMoleculeFormat
   virtual const char* Description() //required
   {
    return
-    "The LPMD file format.\n"
+    "LPMD format\n"
     "Read and write LPMD's atomic configuration file\n\n"
-    "Read Options e.g. -ab:\n"
+    "Read Options e.g. -ab\n"
     "  s  Output single bonds only\n"
     "  b  Disable bonding entirely\n\n"
-    "Write Options e.g. -xn\n"
-    "   f# Indicate the level of the ouput file 0 (default), 1 or 2.\n"
-    "   m# Indicate the mode if ``-xl 1`` is used\n"
-    "        0 (default) is for accelerations and 1 for forces.\n"
-    "   c <vectorcells> Set the cell vectors if not present\n"
+    "Write Options e.g. -xf 1\n"
+    "  f# Indicate the level of the output file: 0 (default), 1 or 2.\n"
+    "  m# Indicate the mode for level 2 output files\n"
+    "        0 (default) is for accelerations and 1 for forces\n"
+    "  c <vectorcells> Set the cell vectors if not present\n"
     "        Example: ``-xc 10.0,0,0,0.0,10.0,0.0,0.0,0.0,20.0``\n"
-    "   e Add the charge to the output file\n\n"
+    "  e Add the charge to the output file\n\n"
     ;
   };
 
@@ -226,7 +226,7 @@ bool LpmdFormat::ReadMolecule(OBBase* pOb, OBConversion* pConv)
    if(headers.at(i).compare("FHG")==0) from_string<double>(FCH, tokens.at(i-1), std::dec);
   }
   atom->SetVector(unitcell->FractionalToCartesian(vector3(X,Y,Z)));
-  int atomicNum = etab.GetAtomicNum(symbol.c_str());
+  int atomicNum = OBElements::GetAtomicNum(symbol.c_str());
   atom->SetAtomicNum(atomicNum);
   //Conditional or zero??
   if( CHG!=0.0e0 ) atom->SetPartialCharge(CHG);
@@ -377,7 +377,7 @@ bool LpmdFormat::WriteMolecule(OBBase* pOb, OBConversion* pConv)
  {
   OBAtom *atom = mol.GetAtom(i + 1);
   vector3 tmp=uc->CartesianToFractional(vector3(atom->GetX(),atom->GetY(),atom->GetZ()));
-  snprintf(buffer, BUFF_SIZE, "%-3s%15.5f%15.5f%15.5f",etab.GetSymbol(atom->GetAtomicNum()),
+  snprintf(buffer, BUFF_SIZE, "%-3s%15.5f%15.5f%15.5f",OBElements::GetSymbol(atom->GetAtomicNum()),
    tmp.GetX(),
    tmp.GetY(),
    tmp.GetZ());

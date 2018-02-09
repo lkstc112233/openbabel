@@ -15,11 +15,12 @@ This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
-***********************************************************************/
+*************************h**********************************************/
 
 #include <openbabel/babelconfig.h>
 #include <openbabel/mol.h>
 #include <openbabel/locale.h>
+#include <openbabel/elements.h>
 
 #include "forcefielduff.h"
 
@@ -700,7 +701,7 @@ namespace OpenBabel {
       coordination = b->GetValence() + sites;
       if (coordination <= 4) { // normal valency
         coordination = ipar;
-      } else if (b->IsSulfur() && b->CountFreeOxygens() == 3) {
+      } else if (b->GetAtomicNum() == OBElements::Sulfur && b->CountFreeOxygens() == 3) {
         // SO3, should be planar
         // PR#2971473, thanks to Philipp Rumpf
         coordination = 2; // i.e., sp2
@@ -1106,7 +1107,7 @@ namespace OpenBabel {
 
 			// Equation 13 from paper -- corrected by Towhee
 			// Note that 1/(rij * rjk) cancels with rij*rjk in eqn. 13
-			anglecalc.ka = (644.12 * KCAL_TO_KJ) * (anglecalc.zi * anglecalc.zk / (pow(rac, 5.0)));
+			anglecalc.ka = (664.12 * KCAL_TO_KJ) * (anglecalc.zi * anglecalc.zk / (pow(rac, 5.0)));
 			anglecalc.ka *= (3.0*rab*rbc*(1.0 - anglecalc.cosT0*anglecalc.cosT0) - rac*rac*anglecalc.cosT0);
       // Make sure to divide by n^2 to save CPU cycles
       switch (anglecalc.coord) {
@@ -1529,6 +1530,24 @@ namespace OpenBabel {
     return true;
   }
 
+  bool OBForceFieldUFF::SetupPointers()
+  {
+    for (unsigned int i = 0; i < _bondcalculations.size(); ++i)
+      _bondcalculations[i].SetupPointers();
+    for (unsigned int i = 0; i < _anglecalculations.size(); ++i)
+      _anglecalculations[i].SetupPointers();
+    for (unsigned int i = 0; i < _torsioncalculations.size(); ++i)
+      _torsioncalculations[i].SetupPointers();
+     for (unsigned int i = 0; i < _oopcalculations.size(); ++i)
+      _oopcalculations[i].SetupPointers();
+    for (unsigned int i = 0; i < _vdwcalculations.size(); ++i)
+      _vdwcalculations[i].SetupPointers();
+    for (unsigned int i = 0; i < _electrostaticcalculations.size(); ++i)
+      _electrostaticcalculations[i].SetupPointers();
+
+    return true;
+  }
+
   bool OBForceFieldUFF::ParseParamFile()
   {
     vector<string> vs;
@@ -1676,6 +1695,9 @@ namespace OpenBabel {
         }
         if (organomet)
           a->SetType("P_3+q");
+      }
+      else if (a->GetAtomicNum() > 102) { // superheavy
+        a->SetType("Lw6+3"); // prevent a crash with atoms beyond the parameterization Avogadro PR#741
       }
     }
 

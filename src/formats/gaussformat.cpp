@@ -14,7 +14,10 @@ GNU General Public License for more details.
 ***********************************************************************/
 #include <openbabel/babelconfig.h>
 
+#include <openbabel/data.h>
+#include <openbabel/data_utilities.h>
 #include <openbabel/obmolecformat.h>
+#include <openbabel/pointgroup.h>
 
 using namespace std;
 namespace OpenBabel
@@ -195,11 +198,11 @@ namespace OpenBabel
       {
         if (atom->GetIsotope() == 0)
           snprintf(buffer, BUFF_SIZE, "%-3s      %10.5f      %10.5f      %10.5f",
-                   etab.GetSymbol(atom->GetAtomicNum()),
+                   OBElements::GetSymbol(atom->GetAtomicNum()),
                    atom->GetX(), atom->GetY(), atom->GetZ());
         else
           snprintf(buffer, BUFF_SIZE, "%-3s(Iso=%d) %10.5f      %10.5f      %10.5f",
-                   etab.GetSymbol(atom->GetAtomicNum()),
+                   OBElements::GetSymbol(atom->GetAtomicNum()),
                    atom->GetIsotope(),
                    atom->GetX(), atom->GetY(), atom->GetZ());
 
@@ -259,91 +262,14 @@ namespace OpenBabel
     return(true);
   }
 
-  static int extract_g234(OpenBabel::OBMol *mol,char *method,
-                          double ezpe,double etherm,double eg234)
-  {
-    // Initiate correction database
-    OpenBabel::OBAtomicHeatOfFormationTable *ahof = new OpenBabel::OBAtomicHeatOfFormationTable();
-    OpenBabel::OBAtomIterator OBai;
-    OpenBabel::OBAtom *OBa;
-    OpenBabel::OBElementTable *OBet;
-    OpenBabel::OBPairData *OBpd0;
-    const char *attr[2] = { "DHf(0K)", "DHf(298.15K)" };
-    char valbuf[128];
-    int ii,atomid,atomicnumber,found,foundall;
-    double ddd0,ddd298,dhof[2];
-
-    OBet = new OpenBabel::OBElementTable();
-
-    // cout << "Number of entries " << ahof->GetSize() << "\n";
-    // cout << "Method " << method << "\n";
-    // Now loop over atoms in order to correct the Delta H formation
-    OBai = mol->BeginAtoms();
-    atomid = 0;
-    foundall = 0;
-#define HARTREE_TO_KCAL 627.509469
-    dhof[0] = eg234;
-    dhof[1] = eg234+etherm-ezpe;
-    for (OBa = mol->BeginAtom(OBai); (NULL != OBa); OBa = mol->NextAtom(OBai))
-      {
-        atomicnumber = OBa->GetAtomicNum();
-        found = ahof->GetHeatOfFormation(OBet->GetSymbol(atomicnumber),method,1,&ddd0,&ddd298);
-        if (1 == found)
-          {
-            dhof[0] += ddd0;
-            dhof[1] += ddd298;
-            foundall ++;
-          }
-        //cout << "Atom "<< atomid << " type " << OBa->GetType() << " atomicnumber " << atomicnumber << " element " << OBet->GetSymbol(atomicnumber) <<"\n";
-        atomid++;
-      }
-    if (foundall == atomid)
-      {
-        std::string str("method");
-        std::string val(method);
-        OBpd0   = new OpenBabel::OBPairData();
-        OBpd0->SetAttribute(str);
-        OBpd0->SetValue(val);
-        OBpd0->SetOrigin(fileformatInput);
-        mol->SetData(OBpd0);
-        for(ii=0; (ii<2); ii++)
-          {
-            // Add to molecule properties
-            dhof[ii] *= HARTREE_TO_KCAL;
-            sprintf(valbuf,"%f",dhof[ii]);
-            std::string str(attr[ii]);
-            std::string val(valbuf);
-            OBpd0   = new OpenBabel::OBPairData();
-            OBpd0->SetAttribute(str);
-            OBpd0->SetValue(val);
-            OBpd0->SetOrigin(fileformatInput);
-            mol->SetData(OBpd0);
-
-            // cout << str << " = " << val << " kcal/mol.\n";
-          }
-      }
-    else
-      {
-        // Debug message?
-      }
-    // Clean up
-    delete OBet;
-    delete ahof;
-
-    if (foundall == atomid)
-      return 1;
-    else
-      return 0;
-  }
-
   static void add_unique_pairdata_to_mol(OpenBabel::OBMol *mol,
-                                         const char *attribute,
+                                         string attribute,
                                          string buffer,int start)
   {
     int i;
     vector<string> vs;
     OpenBabel::OBPairData *pd;
-    std::string method;
+    string method;
 
     tokenize(vs,buffer);
     if (vs.size() >= start)
@@ -370,6 +296,130 @@ namespace OpenBabel
         }
   }
 
+  static int extract_thermo(OpenBabel::OBMol *mol,string method,double temperature,
+                            double ezpe,double Hcorr,double Gcorr,double E0,double CV,
+                            int RotSymNum,std::vector<double> Scomponents)
+  {
+    // Initiate correction database
+    OpenBabel::OBAtomicHeatOfFormationTable *ahof = new OpenBabel::OBAtomicHeatOfFormationTable();
+    OpenBabel::OBAtomIterator OBai;
+    OpenBabel::OBAtom *OBa;
+    char valbuf[128];
+    int ii,atomid,atomicnumber,found,foundall;
+    double dhofM0, dhofMT, S0MT, DeltaSMT;
+    double eFactor = HARTEE_TO_KCALPERMOL;
+
+    // Now loop over atoms in order to correct the Delta H formation
+    OBai     = mol->BeginAtoms();
+    atomid   = 0;
+    foundall = 0;
+    dhofM0   = E0*eFactor;
+    dhofMT   = dhofM0+(Hcorr-ezpe)*eFactor;
+    S0MT     = 0;
+    if (temperature > 0)
+    {
+        // Multiply by 1000 to make the unit cal/mol K
+        S0MT += 1000*eFactor*(Hcorr-Gcorr)/temperature;
+    }
+
+    // Check for symmetry
+    OBPointGroup obPG;
+
+    obPG.Setup(mol);
+    const char *pg = obPG.IdentifyPointGroup();
+
+    double Rgas = 1.9872041; // cal/mol K http://en.wikipedia.org/wiki/Gas_constant
+    double Srot = -Rgas * log(double(RotSymNum));
+
+
+    //printf("DHf(M,0) = %g, DHf(M,T) = %g, S0(M,T) = %g\nPoint group = %s RotSymNum = %d Srot = %g\n",
+    //       dhofM0, dhofMT, S0MT, pg, RotSymNum, Srot);
+    if (RotSymNum > 1)
+    {
+        // We assume Gaussian has done this correctly!
+        Srot = 0;
+    }
+    S0MT     += Srot;
+    DeltaSMT  = S0MT;
+
+    for (OBa = mol->BeginAtom(OBai); (NULL != OBa); OBa = mol->NextAtom(OBai))
+      {
+          double dhfx0, dhfxT, S0xT;
+        atomicnumber = OBa->GetAtomicNum();
+        found = ahof->GetHeatOfFormation(OBElements::GetSymbol(atomicnumber),
+                                         0,
+                                         method,
+                                         temperature,
+                                         &dhfx0, &dhfxT, &S0xT);
+        if (1 == found)
+          {
+            dhofM0 += dhfx0;
+            dhofMT += dhfxT;
+            DeltaSMT += S0xT;
+            foundall ++;
+          }
+        atomid++;
+      }
+    if (foundall == atomid)
+      {
+        std::string attr[5];
+        double result[5];
+        char buf[32];
+
+        attr[0].assign("DeltaHform(0K)");
+        result[0] = dhofM0;
+        snprintf(buf, sizeof(buf), "DeltaHform(%gK)", temperature);
+        attr[1].assign(buf);
+        result[1] = dhofMT;
+        snprintf(buf, sizeof(buf), "DeltaSform(%gK)", temperature);
+        attr[2].assign(buf);
+        result[2] = DeltaSMT;
+        snprintf(buf, sizeof(buf), "DeltaGform(%gK)", temperature);
+        attr[3].assign(buf);
+        result[3] = dhofMT - temperature*result[2]/1000;
+        snprintf(buf, sizeof(buf), "S0(%gK)", temperature);
+        attr[4].assign(buf);
+        result[4] = S0MT;
+
+        add_unique_pairdata_to_mol(mol, "method", method, 0);
+        for(ii=0; (ii<5); ii++)
+        {
+            // Add to molecule properties
+            sprintf(valbuf,"%f", result[ii]);
+            add_unique_pairdata_to_mol(mol, attr[ii], valbuf, 0);
+        }
+        sprintf(valbuf, "%f", ezpe*eFactor);
+        add_unique_pairdata_to_mol(mol, "zpe", valbuf, 0);
+        sprintf(valbuf, "%f", CV);
+        add_unique_pairdata_to_mol(mol, "cv", valbuf, 0);
+        sprintf(valbuf, "%f", CV+Rgas);
+        add_unique_pairdata_to_mol(mol, "cp", valbuf, 0);
+        // Entropy components
+        if (Scomponents.size() == 3)
+        {
+            const char *comps[3] = { "Strans", "Srot", "Svib" };
+            for(int i=0; (i<3); i++)
+            {
+                sprintf(valbuf, "%f", Scomponents[i]);
+                add_unique_pairdata_to_mol(mol, comps[i], valbuf, 0);
+            }
+        }
+        // Finally store the energy in internal data structures as well.
+        mol->SetEnergy(dhofMT);
+      }
+    else
+      {
+        // Debug message?
+      }
+    // Clean up
+    delete ahof;
+
+    if (foundall == atomid)
+      return 1;
+    else
+      return 0;
+  }
+
   // Reading Gaussian output has been tested for G98 and G03 to some degree
   // If you have problems (or examples of older output), please contact
   // the openbabel-discuss@lists.sourceforge.net mailing list and/or post a bug
@@ -384,22 +434,29 @@ namespace OpenBabel
     OBMol &mol = *pmol;
     const char* title = pConv->GetTitle();
 
-    char buffer[BUFF_SIZE],method[BUFF_SIZE];
-    string str,str1,str2;
+    char buffer[BUFF_SIZE];
+    string str,str1,str2,thermo_method;
     double x,y,z;
     OBAtom *atom;
     vector<string> vs,vs2;
-    int charge = 0;
-    unsigned int spin = 1;
+    int total_charge = 0;
+    unsigned int spin_multiplicity = 1;
     bool hasPartialCharges = false;
     string chargeModel; // descriptor for charges (e.g. "Mulliken")
 
     // Variable for G2/G3/G4 etc. calculations
-    double ezpe,etherm,eg234;
-    int ezpe_set=0,etherm_set=0,eg234_set=0;
-
-    // Electrostatic potential
-    OBFreeGrid *esp = NULL;
+    double ezpe,Hcorr,Gcorr,E0,CV;
+    bool ezpe_set=false,Hcorr_set=false,Gcorr_set=false,E0_set=false,CV_set=false;
+    double temperature = 0; /* Kelvin */
+    std::vector<double> Scomponents;
+    // Electrostatic potential. ESP is calculated 
+    // once unless the Opt and Pop jobs are combined. 
+    // In this case, ESP is calculated once before
+    // the geometry optmization and once after. If this
+    // happens, the second ESP must be added to OBMol.
+    OBFreeGrid *esp   = NULL;
+    int NumEsp        = 1; 
+    int NumEspCounter = 0;
 
     // coordinates of all steps
     // Set conformers to all coordinates we adopted
@@ -469,7 +526,6 @@ namespace OpenBabel
     mol.BeginModify();
     while (ifs.getline(buffer,BUFF_SIZE))
       {
-
         if(strstr(buffer, "Entering Gaussian") != NULL)
         {
           //Put some metadata into OBCommentData
@@ -493,6 +549,12 @@ namespace OpenBabel
               else if(buffer[1]=='#')
               {
                 //the line describing the method
+                if(strstr(buffer,"Opt") != NULL)
+                {
+                    // It is expected to have two sets of ESP in 
+                    // the log file if Opt is combined with Pop. 
+                    NumEsp = 2;
+                }
                 comment += buffer;
                 OBCommentData *cd = new OBCommentData;
                 cd->SetData(comment);
@@ -525,10 +587,8 @@ namespace OpenBabel
             tokenize(vs, buffer, " \t\n");
             if (vs.size() == 6)
               {
-                charge = atoi(vs[2].c_str());
-                spin = atoi(vs[5].c_str());
-                mol.SetTotalCharge(charge);
-                mol.SetTotalSpinMultiplicity(spin);
+                total_charge = atoi(vs[2].c_str());
+                spin_multiplicity = atoi(vs[5].c_str());
               }
 
             ifs.getline(buffer,BUFF_SIZE);
@@ -627,20 +687,27 @@ namespace OpenBabel
         else if(strstr(buffer,"Exact polarizability") != NULL)
             {
               // actual components XX, YX, YY, XZ, YZ, ZZ
-              tokenize(vs,buffer);
-              if (vs.size() >= 8)
-                {
+              double xx, xy, yy, xz, yz, zz;              
+              const char *ptr = buffer+strlen("Exact polarizability:   ");
+              if (ptr &&
+                  6 == sscanf(ptr, "%8lf%8lf%8lf%8lf%8lf%8lf",
+                              &xx, &xy, &yy, &xz, &yz, &zz))
+              {
                   double Q[3][3];
                   OpenBabel::OBMatrixData *pol_tensor = new OpenBabel::OBMatrixData;
 
-                  Q[0][0] = atof(vs[2].c_str());
-                  Q[1][1] = atof(vs[4].c_str());
-                  Q[2][2] = atof(vs[7].c_str());
-                  Q[1][0] = Q[0][1] = atof(vs[3].c_str());
-                  Q[2][0] = Q[0][2] = atof(vs[5].c_str());
-                  Q[2][1] = Q[1][2] = atof(vs[6].c_str());
+                  Q[0][0] = xx;
+                  Q[1][1] = yy;
+                  Q[2][2] = zz;
+                  Q[1][0] = Q[0][1] = xy;
+                  Q[2][0] = Q[0][2] = xz;
+                  Q[2][1] = Q[1][2] = yz;
                   matrix3x3 pol(Q);
-
+                  
+                  if (mol.HasData("Exact polarizability"))
+                    {
+                      mol.DeleteData("Exact polarizability"); // Delete the old one to add the new one
+                    }
                   pol_tensor->SetAttribute("Exact polarizability");
                   pol_tensor->SetData(pol);
                   pol_tensor->SetOrigin(fileformatInput);
@@ -667,6 +734,10 @@ namespace OpenBabel
                 if (!ifs.getline(buffer,BUFF_SIZE)) break;
                 tokenize(vs,buffer);
               }
+          }
+        else if (strstr(buffer, "Electrostatic Properties Using The SCF Density") != NULL)
+          {
+              NumEspCounter++;
           }
         else if (strstr(buffer, "Atomic Center") != NULL)
           {
@@ -732,14 +803,21 @@ namespace OpenBabel
                     i++;
                   }
               }
-            if (i == np)
+            if (NumEsp == NumEspCounter)
               {
-                esp->SetAttribute("Electrostatic Potential");
-                mol.SetData(esp);
+                if (i == np)
+                  {
+                    esp->SetAttribute("Electrostatic Potential");
+                    mol.SetData(esp);
+                  }
+                else
+                  {
+                    cout << "Read " << esp->NumPoints() << " ESP points i = " << i << "\n";
+                  }
               }
             else
               {
-                cout << "Read " << esp->NumPoints() << " ESP points i = " << i << "\n";
+                esp->Clear();
               }
           }
         else if (strstr(buffer, "Charges from ESP fit") != NULL)
@@ -806,7 +884,7 @@ namespace OpenBabel
           tokenize(vs, buffer);
           vector<vector3> vib1, vib2, vib3;
           double x, y, z;
-          while(vs.size() > 5) {
+          while(vs.size() >= 5) {
             for (unsigned int i = 2; i < vs.size()-2; i += 3) {
               x = atof(vs[i].c_str());
               y = atof(vs[i+1].c_str());
@@ -988,7 +1066,7 @@ namespace OpenBabel
         else if(strstr(buffer,"SCF Done:") != NULL)
           {
             tokenize(vs,buffer);
-            mol.SetEnergy(atof(vs[4].c_str()) * HARTREE_TO_KCAL);
+            mol.SetEnergy(atof(vs[4].c_str()) * HARTEE_TO_KCALPERMOL);
             confEnergies.push_back(mol.GetEnergy());
           }
 /* Temporarily commented out until the handling of energy in OBMol is sorted out
@@ -1012,21 +1090,66 @@ namespace OpenBabel
           {
             tokenize(vs,buffer);
             ezpe = atof(vs[2].c_str());
-            ezpe_set = 1;
+            ezpe_set = true;
           }
         else if(strstr(buffer,"Thermal correction to Enthalpy=") != NULL)
           {
             tokenize(vs,buffer);
-            etherm = atof(vs[4].c_str());
-            etherm_set = 1;
+            Hcorr = atof(vs[4].c_str());
+            Hcorr_set = true;
           }
-        else
+        else if(strstr(buffer,"Thermal correction to Gibbs Free Energy=") != NULL)
+          {
+            tokenize(vs,buffer);
+            Gcorr = atof(vs[6].c_str());
+            Gcorr_set = true;
+          }
+        else if (strstr(buffer,"CV") != NULL)
+          {
+              ifs.getline(buffer,BUFF_SIZE); //Headers
+              ifs.getline(buffer,BUFF_SIZE); //Total heat capacity
+              tokenize(vs,buffer);
+              if (vs.size() == 4)
+              {
+                  if (vs[0].compare("Total") == 0)
+                  {
+                      CV = atof(vs[2].c_str());
+                      CV_set = true;
+                  }
+              }
+              ifs.getline(buffer,BUFF_SIZE); //Electronic
+              ifs.getline(buffer,BUFF_SIZE); //Translational
+              tokenize(vs,buffer);
+              if ((vs.size() == 4) && (vs[0].compare("Translational") == 0) )
+              {
+                  Scomponents.push_back(atof(vs[3].c_str()));
+              }
+              ifs.getline(buffer,BUFF_SIZE); //Rotational
+              tokenize(vs,buffer);
+              if ((vs.size() == 4) && (vs[0].compare("Rotational") == 0))
+              {
+                  Scomponents.push_back(atof(vs[3].c_str()));
+              }
+              ifs.getline(buffer,BUFF_SIZE); //Vibrational
+              tokenize(vs,buffer);
+              if ((vs.size() == 4) && (vs[0].compare("Vibrational") == 0))
+              {
+                  Scomponents.push_back(atof(vs[3].c_str()));
+              }
+          }
+        else if ((strstr(buffer,"Temperature=") != NULL) &&
+                 (strstr(buffer,"Pressure=") != NULL))
+          {
+              tokenize(vs,buffer);
+              temperature = atof(vs[1].c_str());
+          }
+        else if (strstr(buffer, "(0 K)") != NULL)
           {
             /* This must be the last else */
             int i,nsearch;
-            const char *search[] = { "CBS-QB3 (0 K)", "G2(0 K)", "G3(0 K)", "G4(0 K)" };
-            const char *mymeth[] = { "CBS-QB3", "G2", "G3", "G4" };
-            const int myindex[] = { 3, 2, 2, 2 };
+            const char *search[] = { "CBS-QB3 (0 K)", "G2(0 K)", "G3(0 K)", "G4(0 K)", "W1BD (0 K)", "W1U  (0 K)" };
+            const char *mymeth[] = { "CBS-QB3", "G2", "G3", "G4", "W1BD", "W1U" };
+            const int myindex[] = { 3, 2, 2, 2, 3, 3 };
 
             nsearch = sizeof(search)/sizeof(search[0]);
             for(i=0; (i<nsearch); i++)
@@ -1034,20 +1157,14 @@ namespace OpenBabel
                 if(strstr(buffer,search[i]) != NULL)
                   {
                     tokenize(vs,buffer);
-                    eg234 = atof(vs[myindex[i]].c_str());
-                    eg234_set = 1;
-                    strncpy(method,mymeth[i], BUFF_SIZE - 1); // Make sure to leave room for NULL
+                    E0 = atof(vs[myindex[i]].c_str());
+                    E0_set = 1;
+                    thermo_method = mymeth[i];
                     break;
                   }
               }
           }
       } // end while
-
-    // Check whether we have data to extract heat of formation.
-    if (ezpe_set && etherm_set && eg234_set)
-      {
-        extract_g234(&mol,method,ezpe,etherm,eg234);
-      }
 
     if (mol.NumAtoms() == 0) { // e.g., if we're at the end of a file PR#1737209
       mol.EndModify();
@@ -1056,17 +1173,13 @@ namespace OpenBabel
 
     mol.EndModify();
 
-    // Set conformers to all coordinates we adopted
-    // but remove last geometry -- it's a duplicate
-    if (vconf.size() > 1)
-      vconf.pop_back();
-    mol.SetConformers(vconf);
-    mol.SetConformer(mol.NumConformers() - 1);
-    // Copy the conformer data too
-    confData->SetDimension(confDimensions);
-    confData->SetEnergies(confEnergies);
-    confData->SetForces(confForces);
-    mol.SetData(confData);
+    // Check whether we have data to extract heat of formation.
+    if (ezpe_set && Hcorr_set && Gcorr_set && E0_set &&
+        CV_set && (thermo_method.size() > 0))
+      {
+          extract_thermo(&mol,thermo_method,temperature,ezpe,
+                         Hcorr,Gcorr,E0,CV,RotSymNum,Scomponents);
+      }
 
     // Attach orbital data, if there is any
     if (orbitals.size() > 0)
@@ -1144,10 +1257,27 @@ namespace OpenBabel
       mol.SetData(etd);
     }
 
+    // set some default coordinates
+    // ConnectTheDots will remove conformers, so we add those later
+    mol.SetCoordinates(vconf[vconf.size() - 1]);
+
     if (!pConv->IsOption("b",OBConversion::INOPTIONS))
       mol.ConnectTheDots();
     if (!pConv->IsOption("s",OBConversion::INOPTIONS) && !pConv->IsOption("b",OBConversion::INOPTIONS))
       mol.PerceiveBondOrders();
+
+    // Set conformers to all coordinates we adopted
+    // but remove last geometry -- it's a duplicate
+    if (vconf.size() > 1)
+      vconf.pop_back();
+
+    mol.SetConformers(vconf);
+    mol.SetConformer(mol.NumConformers() - 1);
+    // Copy the conformer data too
+    confData->SetDimension(confDimensions);
+    confData->SetEnergies(confEnergies);
+    confData->SetForces(confForces);
+    mol.SetData(confData);
 
     if (hasPartialCharges) {
       mol.SetPartialChargesPerceived();
@@ -1159,6 +1289,8 @@ namespace OpenBabel
       dp->SetOrigin(fileformatInput);
       mol.SetData(dp);
     }
+    mol.SetTotalCharge(total_charge);
+    mol.SetTotalSpinMultiplicity(spin_multiplicity);
 
     mol.SetTitle(title);
     return(true);

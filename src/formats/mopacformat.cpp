@@ -96,16 +96,22 @@ namespace OpenBabel
           {
             // mol.EndModify();
             mol.Clear();
-            mol.BeginModify();
             ifs.getline(buffer,BUFF_SIZE);	// blank
-            ifs.getline(buffer,BUFF_SIZE);	// column headings
-            ifs.getline(buffer,BUFF_SIZE);	// blank
+
+            // could either be columns or real data
             ifs.getline(buffer,BUFF_SIZE);
-            tokenize(vs,buffer);
+            tokenize(vs, buffer);
+            if (vs.size() != 5 || vs[0][0] != '1') { // first character should be atom 1
+              // those were column headings
+              ifs.getline(buffer,BUFF_SIZE);	// blank
+              ifs.getline(buffer,BUFF_SIZE);
+              tokenize(vs,buffer);
+            }
+            // now we're at real data
             while (vs.size() == 5)
               {
                 atom = mol.NewAtom();
-                atom->SetAtomicNum(etab.GetAtomicNum(vs[1].c_str()));
+                atom->SetAtomicNum(OBElements::GetAtomicNum(vs[1].c_str()));
                 x = atof((char*)vs[2].c_str());
                 y = atof((char*)vs[3].c_str());
                 z = atof((char*)vs[4].c_str());
@@ -116,10 +122,10 @@ namespace OpenBabel
                 tokenize(vs,buffer);
               }
           }
-        else if(strstr(buffer,"(ANGSTROMS)") != NULL)
+        // ANGSTROMS but not DEGREES (cartesians, not angles)
+        else if(strstr(buffer,"(ANGSTROMS)") != NULL && strstr(buffer,"(DEGREES)") == NULL)
           { // newer versions don't print CARTESIAN for final geometry
             mol.Clear();
-            mol.BeginModify();
             ifs.getline(buffer,BUFF_SIZE);	// blank
             ifs.getline(buffer,BUFF_SIZE);
             tokenize(vs,buffer);
@@ -128,7 +134,7 @@ namespace OpenBabel
                 if (strcmp(vs[1].c_str(), "Tv") != 0)
                   {
                     atom = mol.NewAtom();
-                    atom->SetAtomicNum(etab.GetAtomicNum(vs[1].c_str()));
+                    atom->SetAtomicNum(OBElements::GetAtomicNum(vs[1].c_str()));
                     x = atof((char*)vs[2].c_str());
                     y = atof((char*)vs[4].c_str());
                     z = atof((char*)vs[6].c_str());
@@ -206,6 +212,60 @@ namespace OpenBabel
                 tokenize(vs,buffer);
               }
           }
+        else if(strstr(buffer,"NC:NB:NA:I") != NULL) // z-matrix
+          {
+            mol.Clear();
+            vector<OBInternalCoord*> vic;
+            vector<unsigned int> indices;
+            vic.push_back((OBInternalCoord*)NULL);
+
+            while (ifs.getline(buffer,BUFF_SIZE)) {
+              tokenize(vs,buffer);
+              if (vs.size() == 0)
+                break;
+              else if (vs.size() < 11)
+                break;
+
+              atom = mol.NewAtom();
+
+              OBInternalCoord *coord = new OBInternalCoord;
+              coord->_dst = atof(vs[2].c_str());
+              coord->_ang = atof(vs[4].c_str());
+              coord->_tor = atof(vs[6].c_str());
+              vic.push_back(coord);
+
+              indices.push_back(atoi(vs[8].c_str()));
+              indices.push_back(atoi(vs[9].c_str()));
+              indices.push_back(atoi(vs[10].c_str()));
+
+              // symbol in column 1
+              atom->SetAtomicNum(OBElements::GetAtomicNum(vs[1].c_str()));
+            }
+            // read the z-matrix
+
+            // now fill in the atom ids into the internal coords
+            unsigned int idx = 0;
+            FOR_ATOMS_OF_MOL (a, mol) {
+              if ((indices[idx] > 0) && (indices[idx] <= mol.NumAtoms()))
+                vic[a->GetIdx()]->_a = mol.GetAtom(indices[idx]);
+              else
+                vic[a->GetIdx()]->_a = NULL;
+
+              if ((indices[idx+1] > 0) && (indices[idx+1] <= mol.NumAtoms()))
+                vic[a->GetIdx()]->_b = mol.GetAtom(indices[idx+1]);
+              else
+                vic[a->GetIdx()]->_b = NULL;
+
+              if ((indices[idx+2] > 0) && (indices[idx+2] <= mol.NumAtoms()))
+                vic[a->GetIdx()]->_c = mol.GetAtom(indices[idx+2]);
+              else
+                vic[a->GetIdx()]->_c = NULL;
+
+              idx += 3;
+            }
+            InternalToCartesian(vic,mol);
+            // coordinates should be set
+          }
         else if(strstr(buffer,"DOUBLY OCCUPIED LEVELS") != NULL)
           {
             tokenize(vs, buffer);
@@ -230,6 +290,28 @@ namespace OpenBabel
           {
             sscanf(buffer,"%*s%*s%*s%*s%*s%lf",&energy);
             mol.SetEnergy(energy);
+          }
+        else if(strstr(buffer,"ELECTROSTATIC POTENTIAL CHARGES") != NULL)
+          {
+            hasPartialCharges = true;
+            charges.clear(); // Mulliken Charges
+            ifs.getline(buffer,BUFF_SIZE);	// blank
+            ifs.getline(buffer,BUFF_SIZE);	// column headings
+            ifs.getline(buffer,BUFF_SIZE);
+            tokenize(vs,buffer);
+            if (vs.size() < 1) return false; // timvdm 18/06/2008
+            while (vs.size() > 0 && strstr(vs[0].c_str(),"DIPOLE") == NULL)
+              {
+                if (vs.size() < 3) break;
+                atom = mol.GetAtom(atoi(vs[0].c_str()));
+                if (atom != NULL)
+                  atom->SetPartialCharge(atof(vs[2].c_str()));
+                charges.push_back(atof(vs[2].c_str()));
+
+                if (!ifs.getline(buffer,BUFF_SIZE))
+                  break;
+                tokenize(vs,buffer);
+              }
           }
         else if(strstr(buffer,"NET ATOMIC CHARGES") != NULL)
           {
@@ -644,7 +726,7 @@ namespace OpenBabel
             atom = mol.NewAtom();
             atom->SetVector(x,y,z); //set coordinates
             //set atomic number
-            atom->SetAtomicNum(etab.GetAtomicNum(elementSymbol.c_str()));
+            atom->SetAtomicNum(OBElements::GetAtomicNum(elementSymbol.c_str()));
           }
       }
 
@@ -689,9 +771,7 @@ namespace OpenBabel
     string defaultKeywords = "PUT KEYWORDS HERE";
 
     if(keywords)
-      {
-        defaultKeywords = keywords;
-      }
+      defaultKeywords = keywords;
 
     if (keywordFile)
       {
@@ -703,8 +783,14 @@ namespace OpenBabel
               ofs << keyBuffer << endl;
           }
       }
-    else
-      ofs << defaultKeywords << endl;
+    else {
+      ofs << defaultKeywords;
+      if (mol.GetTotalCharge() != 0)
+        ofs << " CHARGE=" << mol.GetTotalCharge();
+      
+      // should handle GetTotalSpinMultiplicity() too
+      ofs << endl;
+    }
 
     ofs << mol.GetTitle() << endl;
     ofs << endl; // comment
@@ -713,7 +799,7 @@ namespace OpenBabel
     FOR_ATOMS_OF_MOL(atom, mol)
       {
         snprintf(buffer,BUFF_SIZE,"%-3s%8.5f 1 %8.5f 1 %8.5f 1",
-                 etab.GetSymbol(atom->GetAtomicNum()),
+                 OBElements::GetSymbol(atom->GetAtomicNum()),
                  atom->GetX(),
                  atom->GetY(),
                  atom->GetZ());
@@ -817,7 +903,7 @@ namespace OpenBabel
       indices.push_back(atoi(vs[8].c_str()));
       indices.push_back(atoi(vs[9].c_str()));
 
-      atom->SetAtomicNum(etab.GetAtomicNum(vs[0].c_str()));
+      atom->SetAtomicNum(OBElements::GetAtomicNum(vs[0].c_str()));
     }
 
     unsigned int idx = 0;
@@ -918,7 +1004,7 @@ namespace OpenBabel
       w = vic[atom->GetIdx()]->_ang;
       t = vic[atom->GetIdx()]->_tor;
 
-      strncpy(type, etab.GetSymbol(atom->GetAtomicNum()), 16);
+      strncpy(type, OBElements::GetSymbol(atom->GetAtomicNum()), 16);
       type[15] = '\0';
 
       if (t < 0)

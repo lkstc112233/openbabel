@@ -89,7 +89,7 @@ namespace OpenBabel
   };
 
   /* Avoid SGI Compiler Warnings! */
-  char ElemDesc[MAXELEM][4] = {
+    char ElemDesc[MAXELEM][4] = {
     { ' ', 'N', ' ', ' ' },  /* 0*/
     { ' ', 'C', 'A', ' ' },  /* 1*/
     { ' ', 'C', ' ', ' ' },  /* 2*/
@@ -120,9 +120,6 @@ namespace OpenBabel
     { ' ', 'O', '4', ' ' },  /*27*/
     { ' ', 'O', '6', ' ' }   /*28*/   /* 21-28 Nucleic Acid H-Bonding */
   };
-
-  unsigned int ResNo  = MINRES;
-  unsigned int ElemNo = MINELEM;
 
  /** \class OBResidue residue.h <openbabel/residue.h>
       \brief Residue information
@@ -329,30 +326,13 @@ namespace OpenBabel
               }
           }
 
-        unsigned int refno;
-        for( refno = MINELEM ; refno < ElemNo ; refno++ )
-          if( !strncmp(ElemDesc[refno], atomid, 4) )
-            return refno;
-
-        if ( ElemNo < MAXELEM - 1 )
-          {
-            ElemNo++;
-            ElemDesc[refno][0] = (char) ch1;
-            ElemDesc[refno][1] = (char) ch2;
-            ElemDesc[refno][2] = (char) ch3;
-            ElemDesc[refno][3] = (char) ch4;
-            return refno;
-          }
-        else
-          {
-            obErrorLog.ThrowError(__FUNCTION__, "Maximum number of atom ids exceeded", obWarning);
-            return 0;
-          }
+        return MAXELEM;
       }
+
     else
       {
         obErrorLog.ThrowError(__FUNCTION__, "NULL Atom IDs specified", obWarning);
-        return 0;
+        return MAXELEM;
       }
   }
 
@@ -751,23 +731,15 @@ namespace OpenBabel
             break;
           }
 
-        unsigned int refno;
-        for( refno = MINRES; refno < ResNo ; refno++ )
-          if( !strncmp(Residue[refno],res,3) )
-            return refno;
-
-        if ( ResNo < MAXRES - 1 )
-          {
-            ResNo++;
-            Residue[refno][0] = (char) ch1;
-            Residue[refno][1] = (char) ch2;
-            Residue[refno][2] = (char) ch3;
-            return refno;
-          }
       }
 
     return OBResidueIndex::UNK;
   }
+
+  void    OBResidue::SetInsertionCode(const char insertioncode) {
+	_insertioncode=insertioncode;
+  }
+
 
   static void SetResidueKeys(const char   *residue,
                              unsigned int &reskey,
@@ -855,7 +827,7 @@ namespace OpenBabel
     _resnum   = "";
     _resname  = "";
     _vdata.clear();
-
+_insertioncode=0;
   }
 
   OBResidue::OBResidue(const OBResidue &src) :
@@ -869,6 +841,7 @@ namespace OpenBabel
     _atomid   = src._atomid;
     _hetatm   = src._hetatm;
     _sernum   = src._sernum;
+_insertioncode=src._insertioncode;
 
   }
 
@@ -899,6 +872,7 @@ namespace OpenBabel
         _atomid   = src._atomid;
         _hetatm   = src._hetatm;
         _sernum   = src._sernum;
+   _insertioncode = src._insertioncode;
       }
 
     return(*this);
@@ -955,6 +929,7 @@ namespace OpenBabel
     _reskey  = OBResidueIndex::UNK;
     _resnum  = "";
     _resname = "";
+    _insertioncode=0;
 
     _atoms.clear();
     _atomid.clear();
@@ -1097,6 +1072,11 @@ namespace OpenBabel
   unsigned int OBResidue::GetResKey(void) const
   {
     return(_reskey);
+  }
+
+  char OBResidue::GetInsertionCode(void) const
+  {
+    return(_insertioncode);
   }
 
   string OBResidue::GetAtomID(OBAtom *atom) const

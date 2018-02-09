@@ -308,7 +308,8 @@ basic_unzip_streambuf<charT, traits>::basic_unzip_streambuf(istream_reference is
       _istream(istream),
       _input_buffer(input_buffer_size),
       _buffer(read_buffer_size),
-      _crc(0)
+      _crc(0),
+      _unzipped_component_bytes(0)
 {
   initialize(window_size);
 }
@@ -382,7 +383,7 @@ template <class charT, class traits>
 std::streampos
   basic_unzip_streambuf<charT, traits>::currentpos()
 {
-  return _zip_stream.total_out - std::streamoff(this->egptr() - this->gptr());
+  return _unzipped_component_bytes + _zip_stream.total_out - std::streamoff(this->egptr() - this->gptr());
 }
 
 template <class charT, class traits>
@@ -397,7 +398,6 @@ std::streampos
   // We can't really randomly skip around, so we go to the beginning and read until we hit the right spot
   // So the first step is to calculate the final positioning
   std::streampos finalpos;
-  char ch;
   switch ( way )
     {
     case std::ios_base::beg :
@@ -407,7 +407,7 @@ std::streampos
     case std::ios_base::end:
       // find the end of the file -- might be enough if off = 0
       while(this->sgetc() != EOF) {
-        ch = this->sbumpc();
+        this->sbumpc();
       }
       finalpos = this->currentpos() + off;
       if (off == 0)
@@ -427,11 +427,12 @@ std::streampos
     _istream.seekg(0);
     this->initialize(-15);
     this->check_header();
+    _unzipped_component_bytes = 0;
   }
 
   // Now we keep going, throwing away the data until we get to the right place
   while(this->sgetc() != EOF && this->currentpos() != finalpos) {
-    ch = this->sbumpc();
+    this->sbumpc();
   }
 
   return this->currentpos();
@@ -446,13 +447,13 @@ std::streampos
 
   _istream.clear(std::ios::goodbit);
   _istream.seekg(0);
+  _unzipped_component_bytes = 0;
   this->initialize(-15);
   this->check_header();
 
   // Now we keep going, throwing away the data until we get to the right place
-  char ch;
   while(this->sgetc() != EOF && this->currentpos() != sp) {
-    ch = this->sbumpc();
+    this->sbumpc();
   }
 
   return this->currentpos();
@@ -568,7 +569,18 @@ basic_unzip_streambuf<charT, traits>::unzip_from_stream(char_type* buffer,
 
     // check if it is the end
     if (_err == Z_STREAM_END)
-        put_back_from_zip_stream();
+    { //dkoes, support concatenated zip files
+      put_back_from_zip_stream();
+      _unzipped_component_bytes += _zip_stream.total_out; //needed for seeking
+      inflateReset(&_zip_stream);
+      //read footer
+      for(unsigned i = 0; i < 8; i++)
+      {
+        get_istream().get(); //but ignore since for some reason check_footer is in the stream class.. and isn't called anyway
+      }
+
+      _err = check_header();
+    }
 
     return n_read;
 }

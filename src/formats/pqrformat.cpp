@@ -97,7 +97,6 @@ namespace OpenBabel
 
     int chainNum = 1;
     char buffer[BUFF_SIZE];
-    OBBitVec bs;
     vector<double> charges, radii;
     string line, key, value;
 
@@ -128,9 +127,6 @@ namespace OpenBabel
                 obErrorLog.ThrowError(__FUNCTION__, errorMsg.str() , obError);
               }
 
-            if (EQn(buffer,"ATOM",4))
-              bs.SetBitOn(mol.NumAtoms());
-
             // Read in the partial charge and radius too
             charges.push_back( parseAtomCharge(buffer, mol) );
             radii.push_back( parseAtomRadius(buffer, mol) );
@@ -144,7 +140,7 @@ namespace OpenBabel
     }
 
     // Use residue definitions to assign bond orders
-    resdat.AssignBonds(mol,bs);
+    resdat.AssignBonds(mol);
 
     mol.EndModify();
 
@@ -186,18 +182,18 @@ namespace OpenBabel
   static double parseAtomCharge(char *buffer, OBMol &mol)
   // In PQR format, either:
   // Field name, atom number, atom name, residue name, residue number
-  //    x y z charge radius
+  //    x y z charge radius element
   // OR
-  // Field, atom number, atom name, chain id, residue number, X, Y, Z, chg, rad
+  // Field, atom number, atom name, chain id, residue number, X, Y, Z, chg, rad, ele
   {
     vector<string> vs;
     tokenize(vs,buffer);
 
     OBAtom *atom = mol.GetAtom(mol.NumAtoms());
 
-    if (vs.size() == 10)
+    if (vs.size() == 11)//add element, Zhixiong Zhao
       return atof(vs[8].c_str());
-    else if (vs.size() == 11)
+    else if (vs.size() == 12)
       return atof(vs[9].c_str());
 
     return 0.0;
@@ -210,9 +206,9 @@ namespace OpenBabel
 
     OBAtom *atom = mol.GetAtom(mol.NumAtoms());
 
-    if (vs.size() == 10)
+    if (vs.size() == 11)
       return atof(vs[9].c_str());
-    else if (vs.size() == 11)
+    else if (vs.size() == 12)
       return atof(vs[10].c_str());
 
     return 0.0;
@@ -378,11 +374,10 @@ namespace OpenBabel
     string zstr = sbuf.substr(40,8);
     vector3 v(atof(xstr.c_str()),atof(ystr.c_str()),atof(zstr.c_str()));
     atom.SetVector(v);
-    atom.ForceImplH();
 
     // useful for debugging unknown atom types (e.g., PR#1577238)
     //    cout << mol.NumAtoms() + 1 << " " << atmid << " type: " << type << endl;
-    atom.SetAtomicNum(etab.GetAtomicNum(type.c_str()));
+    atom.SetAtomicNum(OBElements::GetAtomicNum(type.c_str()));
 
     /* residue sequence number */
     string resnum = sbuf.substr(16,4);
@@ -488,7 +483,7 @@ namespace OpenBabel
     for (i = 1; i <= mol.NumAtoms(); i++)
       {
         atom = mol.GetAtom(i);
-        strncpy(type_name, etab.GetSymbol(atom->GetAtomicNum()), sizeof(type_name));
+        strncpy(type_name, OBElements::GetSymbol(atom->GetAtomicNum()), sizeof(type_name));
         type_name[sizeof(type_name) - 1] = '\0';
 
         //two char. elements are on position 13 and 14 one char. start at 14
@@ -509,7 +504,7 @@ namespace OpenBabel
             the_chain = res->GetChain();
 
             //two char. elements are on position 13 and 14 one char. start at 14
-            if (strlen(etab.GetSymbol(atom->GetAtomicNum())) == 1)
+            if (strlen(OBElements::GetSymbol(atom->GetAtomicNum())) == 1)
               {
                 if (strlen(type_name) < 4)
                   {
@@ -535,7 +530,7 @@ namespace OpenBabel
             res_num = 1;
           }
 
-        element_name = etab.GetSymbol(atom->GetAtomicNum());
+        element_name = OBElements::GetSymbol(atom->GetAtomicNum());
         //snprintf(buffer, BUFF_SIZE, "%s%5d %-4s %-3s %c%4d    %8.3f%8.3f%8.3f  1.00  0.00          %2s  \n",
         snprintf(buffer, BUFF_SIZE, "%s%5d %-4s %-3s %c%4d    %8.3f%8.3f%8.3f %11.8f%8.3f %2s  \n",
                  het?"HETATM":"ATOM  ",
@@ -548,7 +543,9 @@ namespace OpenBabel
                  atom->GetY(),
                  atom->GetZ(),
                  atom->GetPartialCharge(),
-                 etab.GetVdwRad(atom->GetAtomicNum()),
+                 atom->HasData("Radius")//use atom radius data,Zhixiong Zhao
+				 	?atof(atom->GetData("Radius")->GetValue().c_str())
+					:OBElements::GetVdwRad(atom->GetAtomicNum()),
                  element_name);
         ofs << buffer;
       }

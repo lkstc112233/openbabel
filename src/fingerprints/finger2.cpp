@@ -21,6 +21,7 @@ GNU General Public License for more details.
 #include <openbabel/fingerprint.h>
 #include <set>
 #include <vector>
+#include <openbabel/elements.h>
 
 using namespace std;
 namespace OpenBabel
@@ -108,7 +109,7 @@ bool fingerprint2::GetFingerprint(OBBase* pOb, vector<unsigned int>&fp, int nbit
 	vector<OBNodeBase*>::iterator i;
 	for (patom = pmol->BeginAtom(i);patom;patom = pmol->NextAtom(i))
 	{
-		if(patom->IsHydrogen()) continue;
+		if(patom->GetAtomicNum() == OBElements::Hydrogen) continue;
 		vector<int> curfrag;
 		vector<int> levels(pmol->NumAtoms());
 		getFragments(levels, curfrag, 1, patom, NULL);
@@ -164,7 +165,7 @@ void fingerprint2::getFragments(vector<int> levels, vector<int> curfrag,
 	{
 		if(pnewbond==pbond) continue; //don't retrace steps
 		OBAtom* pnxtat = pnewbond->GetNbrAtom(patom);
-		if(pnxtat->IsHydrogen()) continue;
+		if(pnxtat->GetAtomicNum() == OBElements::Hydrogen) continue;
 
 		int atlevel = levels[pnxtat->GetIdx()-1];
 		if(atlevel) //ring
@@ -173,8 +174,9 @@ void fingerprint2::getFragments(vector<int> levels, vector<int> curfrag,
 			{
 				//If complete ring (last bond is back to starting atom) add bond at front
 				//and save in ringset
-				curfrag[0] = bo;
+				curfrag[0] = pnewbond->IsAromatic() ? 5 : pnewbond->GetBO();
 				ringset.insert(curfrag);
+ 				curfrag[0] = 0;
 			}
 		}
 		else //no ring
@@ -237,12 +239,6 @@ void fingerprint2::DoRings()
 			rotate(t1.begin(),t1.begin()+2,t1.end());
 			if(t1>maxring)
 				maxring=t1;
-
-			//Add the non-ring form of all ring rotations
-			int tmp = t1[0];
-			t1[0] = 0;
-			fragset.insert(t1);
-			t1[0] = tmp;
 
 			//reverse the direction around ring
 			vector<int> t2(t1);
